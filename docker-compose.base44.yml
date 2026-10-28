@@ -1,0 +1,64 @@
+# Base44 sandbox environment for the Decentralized Voting app.
+# Runs the React dev server straight from the cloned source (bind mount + CRA
+# dev server), so edits appear without rebuilding an image.
+services:
+  web:
+    image: node:20-bookworm
+    working_dir: /app
+    init: true
+    restart: on-failure
+    labels:
+      base44.project: "Decentralized Voting"
+      base44.kind: "web"
+      base44.port: "3000"
+    ports:
+      - "3000:3000"
+    environment:
+      # Platform-provided; forwarded as-is (never hardcoded).
+      - BASE44_PREVIEW_MODE
+      # react-scripts must not treat lint warnings as fatal, and must not try
+      # to open a browser inside the container.
+      - CI=false
+      - BROWSER=none
+      - HOST=0.0.0.0
+      - PORT=3000
+      # Bind mounts do not emit inotify events reliably; poll for changes.
+      - WATCHPACK_POLLING=true
+      - CHOKIDAR_USEPOLLING=true
+    env_file:
+      # Committed placeholders first, platform secrets last so they win.
+      - ./.env.base44-defaults
+      - path: /run/base44/app.env
+        required: false
+    volumes:
+      - .:/app
+      # Keep container-installed modules out of the bind mount.
+      - base44_node_modules:/app/node_modules
+    command:
+      - sh
+      - -ec
+      - |
+        stamp=node_modules/.base44-lock-stamp
+        want=$$(sha256sum package-lock.json | cut -d' ' -f1)
+        if [ ! -f "$$stamp" ] || [ "$$(cat "$$stamp")" != "$$want" ]; then
+          echo "Installing dependencies from package-lock.json..."
+          npm ci --no-audit --no-fund
+          printf '%s\n' "$$want" > "$$stamp"
+        fi
+        exec npm start
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          fetch('http://127.0.0.1:3000/')
+          .then((r) => process.exit(r.ok ? 0 : 1))
+          .catch(() => process.exit(1))
+      interval: 15s
+      timeout: 5s
+      start_period: 240s
+      retries: 5
+
+volumes:
+  base44_node_modules:

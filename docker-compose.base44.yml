@@ -1,0 +1,98 @@
+name: decentralized-voting
+
+# Development stack for the Decentralized Voting dApp.
+# - chain:  local Ethereum node (Hardhat network, replaces Ganache)
+# - deploy: one-shot contract deployment, writes public/deployment.json
+# - web:    React dev server (react-scripts) on host port 3000
+# Everything runs from the bind-mounted source, so edits hot-reload.
+
+x-node: &node
+  image: node:20-bullseye
+  working_dir: /app
+  volumes:
+    - ./:/app
+
+services:
+  install:
+    <<: *node
+    command: ["sh", "-ec", "exec sh scripts/ensure-deps.sh"]
+    environment:
+      - CI=true
+    labels:
+      base44.kind: infra
+
+  chain:
+    <<: *node
+    command: ["sh", "-ec", "exec npx hardhat node --hostname 0.0.0.0 --port 8545"]
+    depends_on:
+      install:
+        condition: service_completed_successfully
+    restart: on-failure
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"fetch('http://127.0.0.1:8545',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'eth_blockNumber',params:[]})}).then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))\"",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 15s
+    labels:
+      base44.project: "Ethereum node"
+      base44.kind: infra
+
+  deploy:
+    <<: *node
+    command: ["sh", "-ec", "npx hardhat run scripts/deploy.js --network localhost"]
+    environment:
+      - RPC_URL=http://chain:8545
+    depends_on:
+      install:
+        condition: service_completed_successfully
+      chain:
+        condition: service_healthy
+    labels:
+      base44.kind: worker
+
+  web:
+    <<: *node
+    command: ["sh", "-ec", "exec npm start"]
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - HOST=0.0.0.0
+      - BROWSER=none
+      - CI=false
+      - WATCHPACK_POLLING=true
+      - CHOKIDAR_USEPOLLING=true
+      # Accept the preview proxy's host names (dev server only).
+      - DANGEROUSLY_DISABLE_HOST_CHECK=true
+      # JSON-RPC is proxied by src/setupProxy.js, so the browser stays same-origin.
+      - RPC_TARGET=http://chain:8545
+      # Well-known Hardhat development account #0: valid only on the local node,
+      # used so the app is usable without the MetaMask browser extension.
+      - REACT_APP_DEV_PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+    depends_on:
+      install:
+        condition: service_completed_successfully
+      chain:
+        condition: service_healthy
+      deploy:
+        condition: service_completed_successfully
+    restart: on-failure
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"fetch('http://127.0.0.1:3000/').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+    labels:
+      base44.project: "Voting app"
+      base44.kind: web
+      base44.port: "3000"
